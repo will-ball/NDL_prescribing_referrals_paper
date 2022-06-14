@@ -1,0 +1,285 @@
+---
+title: "TableOne"
+author: "Will Ball"
+date: "07/03/2022"
+output: html_document
+---
+
+```{r cars}
+.libPaths("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/R Libraries")
+```
+
+# Packages
+
+```{r, warning = F, message = F}
+#library(Rcpp)
+library(tidyverse) # General use & plotting etc
+library(tidylog) # For notices about tidy functions
+library(lubridate) # date functions
+library(data.table) # for faster functions
+library(scales) # for figures
+library(broom) # for SII RII
+library(lemon) # for facet_rep_wrap()
+library(tableone)
+
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+```
+
+# Data
+```{r data}
+# Set factor levels & derive date variables
+pis_joined <- 
+  fread("H:/DaSH477/Data/Cleaned Data/Will/grampian_pis_mh_only.csv", 
+        sep = ",") %>%
+  rename(age = age_at_event,
+         sex = chi_sex) %>% 
+  mutate(school_ages = case_when(
+    age >= 0  & age <= 4    ~ "Pre-Schoolers",
+    age >= 5  & age <= 7    ~ "Lower Primary",
+    age >= 8  & age <= 11   ~ "Upper Primary",
+    age >= 12 & age <= 14   ~ "Lower Secondary",
+    age >= 15 & age <= 18   ~ "Upper Secondary",
+    age > 18                ~ "School Leavers"),
+    school_ages = ordered(school_ages, levels = c("Pre-Schoolers", "Lower Primary", "Upper Primary",
+                                                       "Lower Secondary", "Upper Secondary", "School Leavers")),
+         year = year(pis_date),
+         half_year = lubridate::floor_date(pis_date, "halfyear"),
+         quarter = floor_date(pis_date, "quarter"),
+         bimonth = floor_date(pis_date, "bimonth"),
+         month_year = floor_date(pis_date, "month"),
+    simd2020_decile = ordered(simd2020_decile, levels = c("1 - Most","2","3","4","5","6","7","8","9","10 - Least"), labels = c("1","2","3","4","5","6","7","8","9","10")),
+    decile = as.double(simd2020_decile),
+    quintile = case_when(
+      decile == 1 | decile == 2  ~ 1,
+      decile == 3 | decile == 4  ~ 2,
+      decile == 5 | decile == 6  ~ 3,
+      decile == 7 | decile == 8  ~ 4,
+      decile == 9 | decile == 10 ~ 5),
+    quint_label = ordered(quintile, labels = c("1", "2", "3", "4", "5")),
+    urban_rural_class = ordered(urban_rural_class, levels = c("Large Urban","Other Urban","Accessible Small Town","Remote Small Town","Accessible Rural","Remote Rural")),
+    ur_simple = case_when(
+      urban_rural_class %in% c("Large Urban", "Other Urban")                 ~ "Urban",
+      urban_rural_class %in% c("Accessible Small Town", "Remote Small Town") ~ "Small Town",
+      urban_rural_class %in% c("Accessible Rural", "Remote Rural")           ~ "Rural"),
+    ur_simple = ordered(ur_simple, levels = c("Urban", "Small Town", "Rural"))
+    )
+
+#add referral count
+pis <- pis_joined %>%
+  group_by(dash_uid) %>%
+  arrange(pis_date) %>%
+  mutate(prescription_number = row_number()) %>%
+  ungroup()
+
+rm(pis_joined)
+
+#Grampian total population numbers (Will's)
+population_data <- read_csv("H:/DaSH477/Data/Population Data/cleaned_pop_simd_2012-2020.csv")
+
+# Calculate mean and annual population per SIMD decile
+#for the years 2015 - 2021 (2021 is 2020)
+population_by_simd <-
+  population_data %>%
+  filter(age %in% c(2:17)) %>% # Cut down ages
+  filter(year >= 2015) %>%
+  group_by(year, decile) %>%
+  summarise(pop = sum(count),
+            .groups = "drop") %>%
+  group_by(decile) %>%
+  summarise(mean_pop = round(mean(pop)))
+
+# Annual population by decile
+annual_pop_simd <- population_data %>% 
+  filter(age %in% c(2:17)) %>% 
+  filter(year >= 2015) %>% 
+  group_by(year, decile) %>% 
+  summarise(pop = sum(count))
+
+# Population by year
+year_pop <- population_data %>%
+  filter(age %in% c(2:17)) %>% 
+  filter(year >= 2015) %>% 
+  group_by(year) %>% 
+  summarise(population = sum(count))
+
+# CAMHS
+# load data and add a few columns
+camhs_joined <- 
+  fread("H:/DaSH477/Data/Cleaned Data/Will/camhs_joined.csv", 
+        sep = ",") %>%
+  mutate(school_ages = case_when(
+    age_at_referral >= 0  &  age_at_referral <= 4    ~ "Pre-Schoolers",
+    age_at_referral >= 5  &  age_at_referral <= 7    ~ "Lower Primary",
+    age_at_referral >= 8  &  age_at_referral <= 11   ~ "Upper Primary",
+    age_at_referral >= 12 & age_at_referral  <= 14   ~ "Lower Secondary",
+    age_at_referral >= 15 & age_at_referral  <= 18   ~ "Upper Secondary"),
+        school_ages = ordered(school_ages, 
+              levels = c("Pre-Schoolers", "Lower Primary", "Upper Primary", "Lower Secondary", "Upper Secondary", "School Leavers")),
+         year = year(referred_date),
+         half_year = floor_date(referred_date, "halfyear"),
+         quarter = floor_date(referred_date, "quarter"),
+         bimonth = floor_date(referred_date, "bimonth"),
+         month_year = floor_date(referred_date, "month"),
+         sex = if_else(sex == "U", NA_character_, as.character(sex)),
+    simd2020_decile = ordered(simd2020_decile, levels = c("1","2","3","4","5","6","7","8","9","10"), labels = c("1","2","3","4","5","6","7","8","9","10")),
+    decile = as.double(simd2020_decile),
+    quintile = case_when(
+      decile == 1 | decile == 2  ~ 1,
+      decile == 3 | decile == 4  ~ 2,
+      decile == 5 | decile == 6  ~ 3,
+      decile == 7 | decile == 8  ~ 4,
+      decile == 9 | decile == 10 ~ 5
+    ),
+    quint_label = ordered(quintile, labels = c("1", "2", "3", "4", "5")),
+    urban_rural_class = ordered(urban_rural_class, levels = c(1:6), labels = c("Large Urban","Other Urban","Accessible Small Town","Remote Small Town","Accessible Rural","Remote Rural")),
+    ur_simple = case_when(
+      urban_rural_class == "Large Urban" | urban_rural_class == "Other Urban"                 ~ "Urban",
+      urban_rural_class == "Accessible Small Town" | urban_rural_class == "Remote Small Town" ~ "Small Town",
+      urban_rural_class == "Accessible Rural" | urban_rural_class == "Remote Rural"           ~ "Rural"),
+    ur_simple = ordered(ur_simple, levels = c("Urban", "Small Town", "Rural")))
+
+#create df that is one row per referral (remove rows for visits from one referral)
+camhs_referrals <-
+  camhs_joined %>%
+  group_by(dash_uid, referred_date) %>%
+  slice_head() %>% 
+  ungroup()
+
+camhs_referrals %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+#if they get an appointment say their referral was accepted
+camhs_referrals <-
+  camhs_referrals %>%
+  mutate(rejected_referral = 
+           ifelse(!is.na(appointment_date), 
+                  2, 
+                  rejected_referral))
+
+#add referral count
+camhs_referrals <-
+  camhs_referrals %>%
+  group_by(dash_uid) %>%
+  arrange(referred_date) %>%
+  mutate(referral_number = row_number()) %>%
+  ungroup()
+
+#limit completeness
+camhs_referrals <-
+  camhs_referrals %>%
+  filter(!is.na(sex)) %>%  # Small numbers
+  filter(!is.na(year))
+
+camhs_referrals %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+# Study Ages
+camhs_referrals <- camhs_referrals %>% # NA referred dates
+  filter(age_at_referral %in% c(2:17)) #Small numbers
+
+camhs_referrals %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+# Study dates
+camhs_referrals <- camhs_referrals %>% 
+  filter(year >= 2015) #trim to 5 years before COVID
+
+camhs_referrals %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+
+rm(camhs_joined)
+```
+
+# Cohort
+
+```{r cohort}
+#limit cohort date range, age, completeness
+pis <- pis %>%
+  filter(age %in% c(2:17)) %>% # Concordant with CAMHS
+  filter(year >= 2015) #trim to 5 years before COVID
+
+#limit cohort date range, age, completeness
+camhs_referrals <-
+  camhs_referrals %>%
+  filter(!is.na(sex)) %>%  # Small numbers
+  filter(!is.na(year)) %>% # NA referred dates
+  filter(age_at_referral %in% c(2:17)) %>% #Small numbers
+  filter(year >= 2015) %>%  #trim to 5 years before COVID
+  mutate(age = age_at_referral) # to align table below
+```
+
+# Table One
+
+```{r tableone}
+vars <- c("age","school_ages","sex","quint_label","ur_simple")
+
+tab0 <- CreateTableOne(vars = vars, data = pis, strata = "year", addOverall = T)
+
+print(tab0, showAllLevels = T, formatOptions = list(big.mark = ","), test = F, quote = T, noSpaces = T) # Can copy&paste output into excel using text import wizard
+
+tab1 <- CreateTableOne(vars = vars, data = camhs_referrals, strata = "year", addOverall = T)
+
+print(tab1, showAllLevels = T, formatOptions = list(big.mark = ","), test = F, quote = T, noSpaces = T) # Can copy&paste output into excel using text import wizard
+
+pis %>% 
+  summarise(individuals = n_distinct(dash_uid))
+
+pis %>% 
+  group_by(year) %>% 
+  summarise(individuals = n_distinct(dash_uid))
+
+camhs_referrals %>% 
+  summarise(individuals = n_distinct(dash_uid))
+
+camhs_referrals %>% 
+  group_by(year) %>% 
+  summarise(individuals = n_distinct(dash_uid))
+```
+
+# Crossover
+
+```{r}
+pis_id <- pis %>% 
+  select(dash_uid, pis_date) %>% 
+  group_by(dash_uid) %>% 
+  slice_head() %>% 
+  ungroup()
+
+camhs_id <- camhs_referrals %>% 
+  select(dash_uid, referred_date) %>% 
+  group_by(dash_uid) %>% 
+  slice_head() %>% 
+  ungroup()
+
+cohort <- pis_id %>%
+  full_join(camhs_id, by = "dash_uid") %>%
+  mutate(
+    pis = case_when(
+      !is.na(pis_date)   ~ "1",
+      TRUE                      ~ "0"),
+    camhs = case_when(
+      !is.na(referred_date)     ~ "1",
+      TRUE                      ~ "0"),
+    both = case_when(
+      pis == "1" & camhs == "1" ~ "1",
+      TRUE                      ~ "0")
+    )
+
+cohort %>% 
+  count(pis, camhs, both)
+```

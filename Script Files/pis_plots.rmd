@@ -1,0 +1,1332 @@
+# Setup
+
+BEFORE RUNNING:
+
+1. Run libPaths call below
+
+```{r}
+.libPaths("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/R Libraries")
+```
+
+# Packages
+
+```{r, warning = F, message = F}
+library(tidyverse) # General use & plotting etc
+library(tidylog) # For notices about tidy functions
+library(lubridate) # date functions
+library(data.table) # for faster functions
+library(scales) # for figures
+library(broom) # for SII RII
+library(lemon) # for facet_rep_wrap()
+library(slider) # For sliding averages to fill in missing monthly data
+library(cowplot) # for plot_grid
+
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+
+# Set plot theme
+theme_set(theme_classic())
+theme_update(panel.grid.major.y = element_line(),
+             plot.title.position = "plot",
+             plot.caption.position = "plot",
+             strip.background = element_blank(),
+             legend.box.background = element_rect(fill = "transparent", colour = NA),
+             legend.background = element_rect(fill = "transparent", colour = NA))
+
+# Colourblind friendly palette
+cbpal <- c("#D81B60","#1E88E5","#FFC107","#004D40","#C5BCF3") # 5 categories
+cbpal1 <- c("#D81B60","#1E88E5","#FFC107","#004D40") # 4 categories
+cbspal <- c("#601A4A","#63ACBE") # For ssex comparison
+```
+
+# Data
+
+```{r data}
+# Set factor levels & derive date variables
+pis_joined <- 
+  fread("H:/DaSH477/Data/Cleaned Data/Will/grampian_pis_mh_only.csv", 
+        sep = ",") %>%
+  rename(age = age_at_event,
+         sex = chi_sex) %>% 
+  mutate(school_ages = case_when(
+    age >= 0  & age <= 4    ~ "Pre-Schoolers",
+    age >= 5  & age <= 7    ~ "Lower Primary",
+    age >= 8  & age <= 11   ~ "Upper Primary",
+    age >= 12 & age <= 14   ~ "Lower Secondary",
+    age >= 15 & age <= 18   ~ "Upper Secondary",
+    age > 18                ~ "School Leavers"),
+    school_ages = ordered(school_ages, levels = c("Pre-Schoolers", "Lower Primary", "Upper Primary",
+                                                       "Lower Secondary", "Upper Secondary", "School Leavers")),
+         year = year(pis_date),
+         half_year = floor_date(pis_date, "halfyear"),
+         quarter = floor_date(pis_date, "quarter"),
+         bimonth = floor_date(pis_date, "bimonth"),
+         month_year = floor_date(pis_date, "month"),
+    simd2020_decile = ordered(simd2020_decile, levels = c("1 - Most","2","3","4","5","6","7","8","9","10 - Least"), labels = c("1","2","3","4","5","6","7","8","9","10")),
+    decile = as.double(simd2020_decile))
+
+#add referral count
+pis <- pis_joined %>%
+  group_by(dash_uid) %>%
+  arrange(pis_date) %>%
+  mutate(prescription_number = row_number()) %>%
+  ungroup()
+
+# Cut
+#limit cohort date range, age, completeness
+pis <- pis %>%
+ # filter(!is.na(sex)) %>%  # From CAMHS but not an issue in PIS
+ # filter(!is.na(year)) %>% # Same
+  filter(age %in% c(2:17))
+
+pis %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+pis <- pis %>% # Concordant with CAMHS
+  filter(year >= 2015) # trim to 5 years before COVID
+
+pis %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+rm(pis_joined)
+
+#Grampian total population numbers
+population_data <- read_csv("H:/DaSH477/Data/Population Data/simd_age_sex_pop_15-21.csv")
+
+# Calculate mean and annual population per SIMD decile
+#for the years 2015 - 2021 (2021 is 2020)
+population_by_simd <-
+  population_data %>%
+  filter(age %in% c(2:17)) %>% # Cut down ages
+  filter(year >= 2015) %>%
+  group_by(year, decile) %>%
+  summarise(pop = sum(count),
+            .groups = "drop") %>%
+  group_by(decile) %>%
+  summarise(mean_pop = round(mean(pop)))
+
+# Annual population by decile
+annual_pop_simd <- population_data %>% 
+  filter(age %in% c(2:17)) %>% 
+  filter(year >= 2015) %>% 
+  group_by(year, decile) %>% 
+  summarise(pop = sum(count))
+
+# Population by year
+year_pop <- population_data %>%
+  filter(age %in% c(2:17)) %>% 
+  filter(year >= 2015) %>% 
+  group_by(year) %>% 
+  summarise(population = sum(count))
+
+# Population by sex year
+year_pop_sex <- population_data %>%
+  filter(age %in% c(2:17)) %>% 
+  filter(year >= 2015) %>% 
+  group_by(year, sex) %>% 
+  summarise(population = sum(count)) %>%
+  mutate(sex = factor(sex, levels = c("Females", "Males"), labels = c("F", "M")))
+```
+
+
+# Cohort
+```{r cohort}
+# Cohort Summary
+pis %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals)
+
+# Per person
+pis %>% 
+  group_by(dash_uid) %>% 
+  arrange(desc(prescription_number)) %>%
+  slice_head() %>% 
+  ungroup() %>% 
+  summarise(mean_scripts = mean(prescription_number))
+
+# Sex
+pis %>% 
+  group_by(sex) %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals) %>% 
+  mutate(prop_pres = prop.table(prescriptions),
+         prop_ind = prop.table(individuals))
+
+# Annual
+pis %>% 
+  group_by(year) %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals,
+    months = n_distinct(as.numeric(month(month_year))),
+    monthly = prescriptions / months) %>% 
+  left_join(year_pop) %>% 
+  mutate(proportion_pop = individuals / population,
+         month_per_1000 = (monthly / population) * 1000,
+         year_per_1000 = month_per_1000 * 12) # Missing months makes this necessary - can do annual total / 12 once all data in
+
+# Annual mean
+pis %>% 
+  group_by(year) %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    .groups = "drop") %>%
+  left_join(year_pop) %>% 
+  mutate(proportion_pop = individuals / population) %>% 
+  summarise(mean_scripts = mean(prescriptions),
+            mean_individuals = mean(individuals),
+            mean_prop = mean(proportion_pop))
+
+# Monthly rise
+pis %>% 
+  group_by(year) %>%
+  filter(year %in% c(2015,2021)) %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals,
+    months = n_distinct(as.numeric(month(month_year))),
+    monthly = prescriptions / months) %>% 
+  left_join(year_pop) %>% 
+  mutate(proportion_pop = individuals / population,
+         month_per_1000 = (monthly / population) * 1000,
+         year_per_1000 = month_per_1000 * 12) %>%
+  summarise(
+    monthly_2015 = month_per_1000[year == 2015],
+    monthly_2021 = month_per_1000[year == 2021],
+    increase = (monthly_2021 - monthly_2015) / monthly_2015
+  )
+
+# Annual by BNF Section
+pis %>% 
+  group_by(year, bnf_section_name) %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals,
+    months = n_distinct(as.numeric(month(month_year))),
+    monthly = prescriptions / months) %>% 
+  left_join(year_pop) %>% 
+  mutate(proportion_pop = individuals / population,
+         month_per_1000 = (monthly / population) * 1000,
+         year_per_1000 = month_per_1000 * 12)
+
+# Monthly rise by section
+pis %>% 
+  group_by(year, bnf_section_name) %>%
+  filter(year %in% c(2015,2021)) %>% 
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals,
+    months = n_distinct(as.numeric(month(month_year))),
+    monthly = prescriptions / months) %>% 
+  left_join(year_pop) %>% 
+  mutate(proportion_pop = individuals / population,
+         month_per_1000 = (monthly / population) * 1000,
+         year_per_1000 = month_per_1000 * 12) %>%
+  group_by(bnf_section_name) %>% 
+  summarise(
+    monthly_2015 = monthly[year == 2015],
+    monthly_2021 = monthly[year == 2021],
+    increase = (monthly_2021 - monthly_2015) / monthly_2015
+  )
+
+# Monthly Rise by Sex
+pis %>% 
+  filter(year %in% c(2015,2021)) %>%
+  group_by(year, sex) %>%
+  summarise(
+    prescriptions = sum(n()),
+    individuals = sum(n_distinct(dash_uid)),
+    rate = prescriptions / individuals,
+    months = n_distinct(as.numeric(month(month_year))),
+    monthly = prescriptions / months) %>% 
+  left_join(year_pop_sex) %>% 
+  mutate(proportion_pop = individuals / population,
+         month_per_1000 = (monthly / population) * 1000,
+         year_per_1000 = month_per_1000 * 12) %>%
+  group_by(sex) %>% 
+  summarise(
+    monthly_2015 = month_per_1000[year == 2015],
+    monthly_2021 = month_per_1000[year == 2021],
+    increase = (monthly_2021 - monthly_2015) / monthly_2015
+  )
+```
+
+# Top Drugs
+```{r}
+# Top Prescriptions
+pis %>% 
+  count(approved_name, sort = T) %>% 
+  slice(1:10) %>% 
+  rename(prescriptions = n)
+
+# Top Prescriptions by individuals
+pis %>% 
+  group_by(dash_uid, approved_name) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  count(approved_name, sort = T) %>% 
+  slice(1:10) %>% 
+  rename(individuals = n)
+
+# Top section prescriptions
+pis %>% 
+  count(bnf_section_name, sort = T) %>% 
+  slice(1:10) %>% 
+  rename(prescriptions = n)
+
+# Top section individuals
+pis %>% 
+  group_by(dash_uid, bnf_section_name) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  count(bnf_section_name, sort = T) %>%
+  slice(1:10) %>% 
+  rename(individuals = n)
+```
+
+# Time prescriptions
+```{r refs by quarter}
+rm(first_prescription_by_age_simd)
+
+prescriptions_per_month <- pis %>%
+ # filter(month_year != ymd("2021-10-01")) %>% #remove due to quarters
+  group_by(month_year) %>%
+  summarise(total_prescriptions = n(),
+            people = n_distinct(dash_uid)) %>%
+  ungroup() %>%
+  tidyr::complete(month_year = seq(min(month_year),max(month_year), by = "1 month")) %>% # Adds rows for missing months
+  tidyr::fill(total_prescriptions, .direction = "down") %>% # adds previous monthly total to NA months
+  tidyr::fill(people, .direction = "down") %>% 
+  mutate(year = year(month_year)) %>% 
+  left_join(year_pop, by = "year") %>% 
+  mutate(pop_rate = total_prescriptions / population,
+         pop_rate_1000 = pop_rate * 1000) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/prescriptions_by_month.csv")
+
+# no melatonin
+prescriptions_per_month_no_mel <- pis %>%
+  filter(!approved_name == "MELATONIN") %>% 
+  group_by(month_year) %>%
+  summarise(total_prescriptions = n(),
+            people = n_distinct(dash_uid)) %>%
+  ungroup() %>%
+  tidyr::complete(month_year = seq(min(month_year),max(month_year), by = "1 month")) %>% # Adds rows for missing months
+  tidyr::fill(total_prescriptions, .direction = "down") %>% # adds previous monthly total to NA months
+  tidyr::fill(people, .direction = "down") %>% 
+  mutate(year = year(month_year)) %>% 
+  left_join(year_pop, by = "year") %>% 
+  mutate(pop_rate = total_prescriptions / population,
+         pop_rate_1000 = pop_rate * 1000) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/prescriptions_by_month_no_mel.csv")
+
+# Total no line
+prescriptions_per_month %>%
+  ggplot(aes(month_year, total_prescriptions)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 2, alpha = .7, color = "firebrick") +
+  scale_x_date(date_breaks = "year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0,4000), breaks = seq(0,4000,by=500), label = comma_format(accuracy = 1)) +
+  labs(x = "", y = "Prescriptions\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescriptions no line.png",height = 4, width = 7, dpi = 800)
+
+
+# Rate no line
+prescriptions_per_month %>%
+  ggplot(aes(month_year, pop_rate_1000)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 2, alpha = .7, color = "firebrick") +
+  scale_x_date(date_breaks = "year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0,40), breaks = seq(0,40,by=5), label = comma_format(accuracy = 1)) +
+  labs(x = "", y = "Prescription Rate\nPer 1,000 Children\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescription rate no line.png", height = 4, width = 7, dpi = 800)
+
+# Annual Rates
+prescriptions_per_month %>% 
+  group_by(year) %>% 
+  summarise(prescriptions = sum(total_prescriptions),
+            people = sum(people),
+            months = n_distinct(month(month_year))) %>% 
+  left_join(year_pop, by = "year") %>% 
+  mutate(avg_month = prescriptions / months,
+         adj_total = avg_month * 12,
+         rate_1000 = (prescriptions / population) * 1000,
+         adj_rate_1000 = (adj_total / population) * 1000)
+
+# Rate no line no mel
+monthly_mel <- pis %>% 
+  filter(approved_name == "MELATONIN") %>% 
+  group_by(month_year) %>%
+  summarise(total_prescriptions = n(),
+            people = n_distinct(dash_uid)) %>%
+  ungroup() %>%
+  tidyr::complete(month_year = seq(min(month_year),max(month_year), by = "1 month")) %>% # Adds rows for missing months
+  tidyr::fill(total_prescriptions, .direction = "down") %>% # adds previous monthly total to NA months
+  tidyr::fill(people, .direction = "down") %>% 
+  mutate(year = year(month_year)) %>% 
+  left_join(year_pop, by = "year") %>% 
+  mutate(pop_rate = total_prescriptions / population,
+         pop_rate_1000 = pop_rate * 1000)
+
+prescriptions_per_month_no_mel %>%
+  ggplot(aes(month_year, pop_rate_1000)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 2, alpha = .7, color = "firebrick") +
+#  geom_point(size = 2, alpha = .7, color = "light grey", data = monthly_mel, aes(month_year, pop_rate_1000)) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0,25), breaks = seq(0,25,by=5), label = comma_format(accuracy = 1)) +
+  labs(x = "", y = "Prescription Rate\nPer 1,000 Children\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescription rate no line no mel.png", height = 4, width = 7, dpi = 800)
+
+prescriptions_per_month_no_mel %>%
+  ggplot(aes(month_year, pop_rate_1000)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 2, alpha = .7, color = "firebrick") +
+  geom_point(size = 2, alpha = .7, color = "light grey", data = monthly_mel, aes(month_year, pop_rate_1000)) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0,25), breaks = seq(0,25,by=5), label = comma_format(accuracy = 1)) +
+  labs(x = "", y = "Prescription Rate\nPer 1,000 Children\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescription rate no line no mel grey.png", height = 4, width = 7, dpi = 800)
+
+# By BNF Section
+prescriptions_per_month_section <- pis %>%
+  group_by(month_year, bnf_section_name) %>%
+  summarise(total_prescriptions = n(),
+            people = n_distinct(dash_uid)) %>% 
+  group_by(bnf_section_name) %>% 
+  tidyr::complete(month_year = seq(min(month_year),max(month_year), by = "1 month")) %>%
+  tidyr::fill(total_prescriptions, .direction = "down") %>% 
+  tidyr::fill(people, .direction = "down") %>%
+  mutate(year = year(month_year)) %>%
+  left_join(year_pop, by = "year") %>%
+  mutate(
+    pop_rate = total_prescriptions / population,
+    pop_rate_1000 = pop_rate * 1000) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/prescriptions_by_month_bnf.csv")
+
+# By BNF Section no line
+prescriptions_per_month_section %>%
+  ggplot(aes(month_year, total_prescriptions, colour = bnf_section_name)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 1.5, alpha = .7) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = pretty_breaks(8), label = comma_format(accuracy = 1)) +
+  lemon::facet_rep_wrap(~bnf_section_name, scales = "free", nrow = 2, repeat.tick.labels = F, label = label_wrap_gen()) +
+  scale_colour_manual(values = cbpal) +
+  labs(x = "", y = "Prescriptions\n") +
+  theme(legend.position = "none")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescriptions bnf no line.png", height = 4, width = 8, dpi = 800)
+
+
+# By BNF Section rate no line
+prescriptions_per_month_section %>%
+  ggplot(aes(month_year, pop_rate_1000, colour = bnf_section_name)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 1.5, alpha = .7) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = pretty_breaks(8), label = comma_format(accuracy = 1)) +
+  lemon::facet_rep_wrap(~bnf_section_name, scales = "free", nrow = 2, repeat.tick.labels = F, label = label_wrap_gen()) +
+  scale_colour_manual(values = cbpal) +
+  labs(x = "", y = "Prescription Rate\nPer 1,000 Children\n") +
+  theme(legend.position = "none")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescription rate bnf no line.png", height = 4, width = 8, dpi = 800)
+
+
+## PEOPLE
+# Total
+prescriptions_per_month %>%
+  ggplot(aes(month_year, people)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 2, alpha = .7, color = "firebrick") +
+  scale_x_date(date_breaks = "year", date_labels = "%Y") +
+  scale_y_continuous(limits = c(0,2500), breaks = seq(0,2500,by=250), label = comma_format(accuracy = 1)) +
+  labs(x = "", y = "Individuals\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly individuals.png", height = 4, width = 8, dpi = 800)
+
+# Four no line
+prescriptions_per_month_section %>%
+  filter(bnf_section_name != "Drugs used in substance dependence") %>%
+  group_by(bnf_section_name) %>% 
+  mutate(max_prescriptions = max(total_prescriptions)) %>% 
+  ungroup() %>% 
+  mutate(section_facet = fct_reorder(bnf_section_name, max_prescriptions, .desc = T)) %>% 
+  ggplot(aes(month_year, total_prescriptions, colour = bnf_section_name)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 1.5, alpha = .7) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = pretty_breaks(8), label = comma_format(accuracy = 1)) +
+  lemon::facet_rep_wrap(~section_facet, scales = "free", nrow = 2, repeat.tick.labels = F, label = label_wrap_gen()) +
+  scale_colour_manual(values = c("#D81B60", "#1E88E5", "#FFC107", "#C5BCF3")) +
+  labs(x = "", y = "Prescriptions\n") +
+  theme(legend.position = "none")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescriptions bnf four no line.png", height = 5, width = 7, dpi = 800)
+
+# Four no line masked
+prescriptions_per_month_section %>%
+  mutate(total_prescriptions = case_when(
+    bnf_section_name == "Hypnotics and Anxiolytics" & total_prescriptions < 400 ~ NA_integer_,
+    TRUE ~ total_prescriptions)) %>% 
+  filter(bnf_section_name != "Drugs used in substance dependence") %>% 
+  ggplot(aes(month_year, total_prescriptions, colour = bnf_section_name)) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  geom_point(size = 1.5, alpha = .7) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = pretty_breaks(7), label = comma_format(accuracy = 1)) +
+  lemon::facet_rep_wrap(~bnf_section_name, scales = "free", nrow = 2, repeat.tick.labels = F, label = label_wrap_gen()) +
+  scale_colour_manual(values = c("#D81B60", "#1E88E5", "#FFC107", "#C5BCF3")) +
+  labs(x = "", y = "Prescriptions\n") +
+  theme(legend.position = "none")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescriptions bnf four no line masked.png", height = 5, width = 7, dpi = 800)
+
+```
+
+#Time+school prescriptions
+```{r refs by quarter school}
+rm(prescriptions_per_month, prescriptions_per_month_section)
+
+# Average population by age group
+school_age_mean_pop <- population_data %>%
+  filter(age >= 2) %>% 
+  filter(age < 18) %>%
+  filter(year >= 2015) %>% 
+  mutate(school_ages = case_when(
+    age >= 0  & age <= 4    ~ "Pre-Schoolers (2-4)",
+    age >= 5  & age <= 7    ~ "Lower Primary (5-7)",
+    age >= 8  & age <= 11   ~ "Upper Primary (8-11)",
+    age >= 12 & age <= 14   ~ "Lower Secondary (12-14)",
+    age >= 15 & age <= 18   ~ "Upper Secondary (15-17)",
+    age > 18                ~ "School Leavers"),
+    school_ages = ordered(school_ages, levels = c("Pre-Schoolers (2-4)", "Lower Primary (5-7)", "Upper Primary (8-11)",
+                                                       "Lower Secondary (12-14)", "Upper Secondary (15-17)", "School Leavers"))) %>% 
+  group_by(year, school_ages) %>% 
+  summarise(population = sum(count), .groups = "drop") %>% 
+  group_by(school_ages) %>% 
+  summarise(mean_pop = round(mean(population)))
+
+# Annual population by age group
+school_age_annual_pop <- population_data %>%
+  filter(age >= 2) %>% 
+  filter(age < 18) %>%
+  filter(year >= 2015) %>% 
+  mutate(school_ages = case_when(
+    age >= 0  & age <= 4    ~ "Pre-Schoolers (2-4)",
+    age >= 5  & age <= 7    ~ "Lower Primary (5-7)",
+    age >= 8  & age <= 11   ~ "Upper Primary (8-11)",
+    age >= 12 & age <= 14   ~ "Lower Secondary (12-14)",
+    age >= 15 & age <= 18   ~ "Upper Secondary (15-17)",
+    age > 18                ~ "School Leavers"),
+    school_ages = ordered(school_ages, levels = c("Pre-Schoolers (2-4)", "Lower Primary (5-7)", "Upper Primary (8-11)",
+                                                       "Lower Secondary (12-14)", "Upper Secondary (15-17)", "School Leavers"))) %>% 
+  group_by(year, school_ages) %>% 
+  summarise(population = sum(count), .groups = "drop")
+
+# School ages
+pis_by_month_school <- pis %>%
+  mutate(school_ages = case_when(
+    age >= 0  & age <= 4    ~ "Pre-Schoolers (2-4)",
+    age >= 5  & age <= 7    ~ "Lower Primary (5-7)",
+    age >= 8  & age <= 11   ~ "Upper Primary (8-11)",
+    age >= 12 & age <= 14   ~ "Lower Secondary (12-14)",
+    age >= 15 & age <= 18   ~ "Upper Secondary (15-17)",
+    age > 18                ~ "School Leavers"),
+    school_ages = ordered(school_ages, levels = c("Pre-Schoolers (2-4)", "Lower Primary (5-7)", "Upper Primary (8-11)",
+                                                       "Lower Secondary (12-14)", "Upper Secondary (15-17)", "School Leavers"))) %>% 
+  group_by(month_year, school_ages) %>%
+  summarise(total_prescriptions = n(),
+            people = n_distinct(dash_uid),
+            .groups = "drop") %>%
+  group_by(school_ages) %>% 
+  tidyr::complete(month_year = seq(min(month_year),max(month_year), by = "1 month")) %>%
+  tidyr::fill(total_prescriptions, .direction = "down") %>% 
+  tidyr::fill(people, .direction = "down") %>%
+  ungroup() %>%
+  mutate(year = year(month_year)) %>% 
+  left_join(school_age_annual_pop, by = c("school_ages", "year")) %>%
+  mutate(pop_rate = total_prescriptions / population,
+         pop_rate_100 = pop_rate * 100,
+         pop_rate_1000 = pop_rate * 1000,
+         proportion = people / population) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/prescriptions_by_month_school.csv")
+
+# Helper function to wrap titles and preserve order in factors
+str_wrap_factor <- function(x,...) {
+  levels(x) <- str_wrap(levels(x), ...)
+  x
+}
+
+# Raw counts
+pis_by_month_school %>%
+  mutate(school_ages_wrap = str_wrap_factor(school_ages, 10)) %>% 
+ # filter(school_ages == "Pre-Schoolers") %>%
+  ggplot(aes(month_year, total_prescriptions, colour = school_ages)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  scale_y_continuous(limits = c(0,NA), breaks = pretty_breaks(10), labels = comma) +
+  scale_colour_manual(values = cbpal) +
+  lemon::facet_rep_wrap(~school_ages_wrap, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  labs(x = "", y = "Monthly Prescriptions\n") +
+  theme(legend.position = "none",
+        panel.margin = unit(-1,"lines"))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescriptions age no line.png", height = 4, width = 7, dpi = 800)
+
+# No line
+pis_by_month_school %>%
+  mutate(school_ages_wrap = str_wrap_factor(school_ages, 10)) %>%
+ # filter(school_ages == "Pre-Schoolers") %>%
+  ggplot(aes(month_year, pop_rate_1000, colour = school_ages_wrap)) +
+  geom_point(size = 1, alpha = 0.7) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  scale_colour_manual(values = cbpal) +
+  lemon::facet_rep_wrap(~school_ages_wrap, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  scale_y_continuous(limits = c(0,NA), breaks = pretty_breaks(10)) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  labs(x = "", y = "Prescription Rate Per 1,000 Children\n") +
+  theme(legend.position = "none",
+             panel.margin = unit(-.5,"lines"))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly prescription rate by age no line.png", height = 4, width = 7, dpi = 800)
+
+# Change
+pis_by_month_school %>% 
+  mutate(year = year(month_year)) %>%
+  filter(year %in% c(2015,2021)) %>% 
+  group_by(school_ages) %>% 
+  summarise(
+    rate_per_1000_avg_2015 = mean(pop_rate_1000[year == 2015]),
+    rate_per_1000_avg_2021 = mean(pop_rate_1000[year == 2021]),
+    rate_2015 = rate_per_1000_avg_2015 * 12,
+    rate_2021 = rate_per_1000_avg_2021 * 12,
+    change = (rate_per_1000_avg_2021 - rate_per_1000_avg_2015) / rate_per_1000_avg_2015
+  )
+
+# Proportion
+pis_by_month_school %>%
+  mutate(school_ages_wrap = str_wrap_factor(school_ages, 10)) %>%
+ # filter(school_ages == "Pre-Schoolers") %>%
+  ggplot(aes(month_year, proportion, colour = school_ages_wrap)) +
+  geom_point(size = 1, alpha = 0.7) +
+  scale_y_continuous(limits = c(0,.035), breaks = seq(0,.035,by=.005), labels = scales::percent_format(accuracy = .5)) +
+  scale_colour_manual(values = cbpal) +
+  lemon::facet_rep_wrap(~school_ages_wrap, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  labs(x = "", y = "Proportion of Population\n") +
+  theme(legend.position = "none",
+        panel.margin = unit(-1,"lines"))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly proportions by ages.png", height = 4, width = 7, dpi = 800)
+```
+
+# Age prescriptions
+```{r refs by age}
+pis_by_age <- pis %>%
+  group_by(age) %>%
+  summarise(prescriptions = n(),
+            people = n_distinct(dash_uid)) %>%
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/pis_by_age.csv")
+
+#Figure 1
+pis_by_age %>%
+  ggplot(aes(age, prescriptions)) +
+  geom_col(fill = "firebrick") +
+  labs(x = "Age in Years", y = "Mental Health Prescriptions\n") +
+  scale_x_continuous(breaks = seq(2,17,by=1)) +
+  scale_y_continuous(breaks = seq(0,20000, by = 2000), label = comma) +
+  theme(legend.position = "none")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/prescriptions by age.png", height = 4, width = 6, dpi = 800)
+```
+
+# Sex over time
+```{r}
+# summary
+monthly_by_sex <- pis %>% 
+  group_by(month_year, sex) %>% 
+  summarise(
+    prescriptions = n(),
+    people = n_distinct(dash_uid)) %>% 
+  group_by(sex) %>%
+  tidyr::complete(month_year = seq(min(month_year),max(month_year), by = "1 month")) %>%
+  fill(prescriptions, .direction = "down") %>% 
+  fill(people, .direction = "down") %>%
+  group_by(month_year) %>% 
+  mutate(prop_prescriptions = prop.table(prescriptions),
+         prop_people = prop.table(people),
+         year = year(month_year)) %>% 
+  left_join(year_pop_sex, by = c("year", "sex")) %>%
+  mutate(rate = prescriptions / population,
+         rate_1000 = rate * 1000) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/sex_by_month.csv")
+
+# Annual
+annual_by_sex <- pis %>%
+  group_by(year, sex) %>% 
+  summarise(prescriptions = n(),
+            people = n_distinct(dash_uid),
+            months = n_distinct(month_year)) %>% 
+  left_join(year_pop_sex, by = c("year", "sex")) %>% 
+  mutate(adj_total = (prescriptions / months) * 12,
+         rate = prescriptions / population,
+         rate_1000 = rate * 1000,
+         adj_rate = adj_total / population,
+         adj_rate_1000 = adj_rate * 1000,
+         proportion = people / population)
+
+# Plot rate
+monthly_by_sex %>% 
+  mutate(sex = factor(sex, levels = c("F", "M"), labels = c("Female", "Male"))) %>%
+  ggplot(aes(x = month_year, y = rate_1000, colour = sex)) +
+  geom_point(size = 2, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = seq(0,55,by=5)) +
+  labs(x = "", y = "Monthly Prescription Rate per 1,000\n") +
+  theme(legend.position = "top",
+        legend.key.size = unit(.5, 'cm'),
+        legend.margin = margin(0,0,0,0),
+        legend.box.margin = margin(0,-15,-10,-10))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly rate by sex.png", height = 4, width = 6, dpi = 800)
+
+# Annual rate
+annual_by_sex %>% 
+  mutate(sex = factor(sex, levels = c("F", "M"), labels = c("Female", "Male"))) %>%
+  ggplot(aes(x = year, y = adj_rate_1000, colour = sex)) +
+  geom_point(size = 2, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_x_continuous(breaks = seq(2015,2021,1), guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = seq(0,550,by=50)) +
+  labs(x = "", y = "Annual Prescription Rate per 1,000\n") +
+  theme(legend.position = "top",
+        legend.key.size = unit(.5, 'cm'),
+        legend.margin = margin(0,0,0,0),
+        legend.box.margin = margin(0,-15,-10,-10))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/annual rate by sex.png", height = 4, width = 6, dpi = 800)
+```
+
+# Age+sex prescriptions
+```{r refs by age sex}
+rm(pis_by_age)
+
+pis_by_age_sex <- pis %>%
+  group_by(age, sex) %>%
+  summarise(prescriptions = n(),
+            people = n_distinct(dash_uid),
+            .groups = "drop") %>%
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/pis_by_age_sex.csv")
+
+# pyramid
+pis_by_age_sex %>% 
+  mutate(sex = factor(sex, levels = c("F", "M"), labels = c("Female", "Male")),
+         people = if_else(sex == "Male", -people, people)) %>% 
+  ggplot(aes(age, people, fill = sex)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2:17)) +
+  scale_y_continuous(limits = c(-1900,1900), breaks = seq(-1800,1800,by=300),
+                     labels = function(x,...){format(abs(x),...,big.mark = ",", scientific = F, trim = T)}) +
+  scale_fill_manual(values = c("#601A4A","#63ACBE"), name = "") +
+  theme(legend.position = c(0.1,0.59),
+        legend.spacing.y = unit(1.08, "cm")) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  labs(x = "\nAge at Prescription", y = "Individuals\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/prescriptions by age & sex5.png", height = 4, width = 6, dpi = 800)
+
+# Combined
+# Over Time
+a <- monthly_by_sex %>% 
+  mutate(sex = factor(sex, levels = c("F", "M"), labels = c("Female", "Male"))) %>%
+  ggplot(aes(x = month_year, y = rate_1000, colour = sex)) +
+  geom_point(size = 2, alpha = .7) +
+  geom_vline(xintercept = as.numeric(as_date("2020-03-26")), colour = "black", linetype = "dashed") +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,NA), breaks = seq(0,55,by=5)) +
+  labs(x = "", y = "Monthly Prescription Rate \nPer 1,000 Children\n") +
+  theme(legend.position = "none",
+        plot.margin = margin(1,1,-10,1))
+
+# Distributions
+b <- pis_by_age_sex %>% 
+  mutate(sex = factor(sex, levels = c("F", "M"), labels = c("Female", "Male")),
+         people = if_else(sex == "Male", -people, people)) %>% 
+  ggplot(aes(age, people, fill = sex)) +
+  geom_col() +
+  scale_x_continuous(breaks = c(2:17)) +
+  scale_y_continuous(limits = c(-1900,1900), breaks = seq(-1800,1800,by=300),
+                     labels = function(x,...){format(abs(x),...,big.mark = ",", scientific = F, trim = T)}) +
+  scale_fill_manual(values = c("#601A4A","#63ACBE"), name = "") +
+  theme(legend.position = "top",
+         legend.key.size = unit(.5, 'cm'),
+         legend.margin = margin(0,0,0,0),
+         legend.box.margin = margin(0,-15,-10,-10)) +
+  guides(fill = guide_legend(byrow = TRUE)) +
+  labs(x = "\nAge at Prescription", y = "Individuals\n")
+
+plot_grid(a, b, labels = c("A", "B"), nrow = 2)
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/age dist and monthly rate.png", height = 6, width = 6, dpi = 800)
+```
+
+# BNF section by age
+```{r}
+school_pop_adj <- school_age_mean_pop %>% 
+  mutate(school_ages = fct_collapse(school_ages,
+                                    "Pre-School & Lower Primary (2-7)" = c("Pre-Schoolers (2-4)", "Lower Primary (5-7)")),
+         school_ages = ordered(school_ages, labels = c("Pre-School & Lower Primary (2-7)", "Upper Primary (8-11)", "Lower Secondary (12-14)", "Upper Secondary (15-17)"))) %>% 
+  group_by(school_ages) %>% 
+  summarise(mean_pop = sum(mean_pop))
+
+school_age_bnf <- pis %>% 
+  mutate(school_ages = fct_collapse(school_ages,
+                                    "Pre-School & Lower Primary" = c("Pre-Schoolers", "Lower Primary")),
+         school_ages = ordered(school_ages, labels = c("Pre-School & Lower Primary (2-7)", "Upper Primary (8-11)", "Lower Secondary (12-14)", "Upper Secondary (15-17)"))) %>% 
+  group_by(school_ages, bnf_section_name) %>% 
+  summarise(prescriptions = n(),
+            people = n_distinct(dash_uid),
+            .groups = "drop") %>%
+  left_join(school_pop_adj, by = "school_ages") %>% 
+  group_by(school_ages) %>% 
+  mutate(total_prescriptions = sum(prescriptions),
+         proportion_by_age = prescriptions / total_prescriptions,
+         pop_rate = prescriptions / mean_pop,
+         pop_rate_1000 = pop_rate * 1000) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/school_age_bnf.csv")
+
+# Prescriptions
+school_age_bnf %>% 
+  ggplot(aes(x = school_ages, y = pop_rate_1000, fill = str_wrap(bnf_section_name,30))) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_fill_manual(values = cbpal) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "", y = "Prescriptions Per 1,000 Children\n", fill = "")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/school ages bnf.png", height = 4, width = 6, dpi = 800)
+
+# Prescriptions stacked
+school_age_bnf %>% 
+  ggplot(aes(x = school_ages, y = pop_rate_1000, fill = str_wrap(bnf_section_name,30))) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_manual(values = cbpal) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_continuous(labels = scales::comma, breaks = seq(0,3000,by=500)) +
+  labs(x = "", y = "Prescription Rate Per 1,000 Children\n", fill = "")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/school ages bnf stack.png", height = 4, width = 6, dpi = 800)
+
+# Combined
+a <- school_age_bnf %>% 
+  ggplot(aes(x = school_ages, y = pop_rate_1000, fill = str_wrap(bnf_section_name,30))) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_manual(values = cbpal) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_continuous(labels = scales::comma, breaks = seq(0,3000,by=500)) +
+  labs(x = "", y = "Prescription Rate\nPer 1,000 Children\n") +
+  theme(legend.position = "none")
+
+b <- school_age_bnf %>% 
+  ggplot(aes(x = school_ages, y = pop_rate_1000, fill = str_wrap(bnf_section_name,30))) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_fill_manual(values = cbpal) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "", y = "Proportion\n") +
+  theme(legend.position = "none")
+
+combo <- plot_grid(a, b, nrow = 1, labels = c("A","B"))
+
+legend <- get_legend(a + theme(legend.position = "right",
+                               legend.title = element_blank()))
+
+
+plot_grid(combo, legend, nrow = 2, labels = NULL, rel_heights = c(1,.25))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/school ages bnf combo.png", height = 6, width = 8, dpi = 800)
+
+plot_grid(b, legend, nrow = 1, labels = NULL, rel_widths = c(.8,.2))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/school ages bnf combo 2.png", height = 6, width = 8, dpi = 800)
+```
+
+# SIMD prescriptions
+```{r refs by simd}
+rm(pis_by_age_sex)
+
+pis_by_simd <- pis %>%
+  group_by(decile) %>%
+  summarise(total = n(),
+            people = n_distinct(dash_uid)) %>%
+  left_join(population_by_simd, by = "decile") %>%
+  mutate(rate = total / mean_pop,
+         prescriptions_per_100 = total / mean_pop * 100) %>%
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/pis_by_simd.csv")
+
+# Annual totals
+annual_totals <- pis %>%
+  group_by(year, decile) %>%
+  summarise(total = n(),
+            people = n_distinct(dash_uid)) %>% 
+  left_join(annual_pop_simd, by = c("decile", "year")) %>% 
+  mutate(total_pop = sum(pop),
+         proportion_pop = pop / total_pop,
+         pop_rate = total / pop,
+         pop_rate_100 = pop_rate * 100,
+         person_rate = people / pop,
+         person_rate_100 = person_rate * 100,
+         overall_rate = sum(total) / sum(pop),
+         overall_rate_100 = overall_rate * 100,
+         area = "NHS Grampian") %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/pis_by_simd2.csv")
+
+# Mean Annual totals & Populations
+mean_totals <- annual_totals %>%
+  group_by(decile) %>% 
+  summarise(mean_total = round(mean(total)),
+            mean_people = round(mean(people)),
+            mean_pop = round(mean(pop)),
+            mean_person_rate = mean_people / mean_pop,
+            mean_person_rate_100 = mean_person_rate * 100,
+            mean_pop_rate = mean_total / mean_pop,
+            mean_pop_rate_100 = mean_pop_rate * 100) %>% 
+  ungroup() %>% 
+  mutate(total_mean_pop = sum(mean_pop),
+         proportion_total_mean_pop = mean_pop / total_mean_pop,
+         area = "NHS Grampian",
+         mean_overall_rate = sum(mean_total) / total_mean_pop,
+         mean_overall_100 = mean_overall_rate * 100) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/pis_by_simd3.csv")
+
+# Figure 4
+abs_range <- paste("Absolute Range:",round(mean_totals$mean_pop_rate_100[mean_totals$decile == 1] - mean_totals$mean_pop_rate_100[mean_totals$decile == 10], digits = 1),"prescriptions per 100 children")
+
+rel_range <- paste("Relative Range:",round(mean_totals$mean_pop_rate_100[mean_totals$decile == 1] / mean_totals$mean_pop_rate_100[mean_totals$decile == 10], digits = 1))
+
+mean_totals %>% 
+  ggplot(aes(decile, mean_pop_rate_100)) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 0.5, colour = "black") +
+  geom_point(size = 2, colour = "firebrick") +
+  scale_x_continuous(breaks = seq(1,10,by=9), labels = c("Most\nDeprived\nDecile","Least\nDeprived\nDecile")) +
+  scale_y_continuous(limits = c(0,40), breaks = seq(0,40,by=5)) +
+  labs(x = "", y = "Prescriptions Per 100 Children\n") + # Average Annual (2015-2021)
+  ggtitle(paste0(abs_range,"\n",rel_range))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/crude prescription rates.png", height = 4, width = 6, dpi = 800)
+
+rm(abs_range, rel_range)
+```
+
+# SIMD+age first referral
+```{r refs by simd age}
+rm(pis_by_simd)
+
+first_prescription_by_age_simd <- pis %>%
+  filter(prescription_number == 1) %>%
+  group_by(decile) %>%
+  summarise(mean_age = mean(age),
+            sd_age = sd(age),
+           .groups = "drop") %>%
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/prescription_by_simd_age.csv")
+
+#Figure 6
+first_prescription_by_age_simd %>%
+  ggplot(aes(decile, mean_age)) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed", size = 0.5, colour = "black") +
+  geom_point(size = 2, colour = "firebrick") +
+  scale_x_continuous(breaks = seq(1,10,by=9), labels = c("Most\nDeprived\nDecile","Least\nDeprived\nDecile")) +
+  scale_y_continuous(limits = c(7,13), breaks = seq(7,13,by=1)) +
+  labs(x = "",
+       y = "Age\n")
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/age at first prescription simd.png", height = 4, width = 6, dpi = 800)
+
+# First referral change over time
+age_at_first <- pis %>% 
+  filter(prescription_number == 1) %>% 
+  group_by(year, sex) %>% 
+  summarise(mean_age = mean(age),
+            sd_age = sd(age),
+            median_age = median(age),
+            iqr_age = IQR(age)) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/first_referral_age_sex.csv")
+
+# Plot
+age_at_first %>% 
+  mutate(sex = factor(sex, levels = c("F", "M"), labels = c("Female", "Male"))) %>%
+  ggplot(aes(x = year, y = mean_age, colour = sex, group = sex)) +
+  geom_point(position = position_dodge(width = .2)) +
+  geom_errorbar(aes(ymin = (mean_age - sd_age), ymax = (mean_age + sd_age)), position = position_dodge(width = .2)) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(2,18), breaks = seq(0,18,by=1))
+```
+
+
+
+#SIMD+time prescriptions
+```{r, fig.width=8, fig.height=4}
+rm(pis_by_month_school)
+
+# Quintiles per year for pop
+annual_quintile <- annual_pop_simd %>%
+  mutate(quintile = case_when(decile %in% c(1, 2) ~ 1,
+                              decile %in% c(3, 4) ~ 2,
+                              decile %in% c(5, 6) ~ 3,
+                              decile %in% c(7, 8) ~ 4,
+                              decile %in% c(9, 10) ~ 5)) %>% 
+  group_by(year, quintile) %>% 
+  summarise(pop = sum(pop))
+
+# Quintiles per year for refs 
+annual_quintile_totals <- annual_totals %>% 
+  mutate(quintile = case_when(decile %in% c(1, 2) ~ 1,
+                              decile %in% c(3, 4) ~ 2,
+                              decile %in% c(5, 6) ~ 3,
+                              decile %in% c(7, 8) ~ 4,
+                              decile %in% c(9, 10) ~ 5)) %>%
+  group_by(year, quintile) %>%
+  summarise(prescriptions = sum(total),
+            people = sum(people),
+            .groups = "drop") %>% 
+  
+# Join and derive rates
+  full_join(annual_quintile, by = c("year","quintile")) %>% 
+  mutate(prescriptions_per_100 = prescriptions / pop * 100,
+         proportion = people / pop) %>%
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/pis/prescriptions_by_simd_year.csv")
+
+# Plot
+dep_labels <- c("Most Deprived" = "Most Deprived","2" = "","3" =  "","4" = "","Least Deprived" = "Least Deprived")
+
+annual_quintile_totals %>%
+  mutate(quintile = ordered(quintile, levels = c(1:5), labels = c("Most Deprived","2","3","4","Least Deprived"))) %>% 
+  filter(year <= 2020) %>%
+  ggplot(aes(year, prescriptions_per_100, group = quintile, color = quintile)) +
+  geom_point(size = 1) +
+  geom_line(size = 1, alpha = 0.5) +
+  lemon::facet_rep_wrap(~quintile, ncol = 5, labeller = labeller(quintile = dep_labels), repeat.tick.labels = F) +
+  labs(x = "", y = "Prescriptions Per 100 Children\n") +
+#  theme(strip.text = element_text(size = 10)) +
+  scale_x_continuous(breaks = seq(2015,2020,by=1), guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0, 45), breaks = seq(0,45,by=5)) +
+  scale_colour_manual(values = c("firebrick4","firebrick","firebrick3","firebrick2","firebrick1")) +
+  theme(legend.position = "none",
+        panel.spacing = unit(-.25,"lines"))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/annual prescription rates by simd.png", height = 4, width = 7, dpi = 800)
+
+# People
+annual_quintile_totals %>%
+  mutate(quintile = ordered(quintile, levels = c(1:5), labels = c("Most Deprived","2","3","4","Least Deprived"))) %>% 
+  filter(year <= 2020) %>%
+  ggplot(aes(year, proportion, group = quintile, color = quintile)) +
+  geom_point(size = 1) +
+  geom_line(size = 1, alpha = 0.5) +
+  lemon::facet_rep_wrap(~quintile, ncol = 5, labeller = labeller(quintile = dep_labels), repeat.tick.labels = F) +
+  labs(x = "", y = "Proportion of Population\n") +
+#  theme(strip.text = element_text(size = 10)) +
+  scale_x_continuous(breaks = seq(2015,2020,by=1), guide = guide_axis(angle = 45)) +
+  scale_y_continuous(limits = c(0,.05), breaks = seq(0,.05,by=.005), labels = scales::percent_format(accuracy=.5)) +
+  scale_colour_manual(values = c("firebrick4","firebrick","firebrick3","firebrick2","firebrick1")) +
+  theme(legend.position = "none",
+        panel.spacing = unit(-.5,"lines"))
+
+ggsave("H:DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/annual proportion by simd.png", height = 4, width = 7, dpi = 800)
+```
+
+# Sex amplification
+```{r}
+monthly_drugs_by_sex <- pis %>%
+  group_by(month_year, sex) %>%
+  summarise(
+    prescriptions = n(),
+    individuals = n_distinct(dash_uid)) %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/monthly_drugs_by_sex.csv")
+
+# Prescriptions
+monthly_drugs_by_sex %>%
+  mutate(sex = ordered(sex, labels = c("Female", "Male"))) %>% 
+  ggplot(aes(x = month_year, y = prescriptions, colour = sex)) + 
+  geom_point(size = 1.5, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(0,2750), breaks = seq(0,2750,250), labels = comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  labs(x = "", y = "Prescriptions\n") +
+  theme(legend.position = c(.15,.915),
+        legend.direction = "horizontal")
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly by sex1.png", height = 4, width = 6, dpi = 800)
+
+# Individuals
+monthly_drugs_by_sex %>%
+  mutate(sex = ordered(sex, labels = c("Female", "Male"))) %>% 
+  ggplot(aes(x = month_year, y = individuals, colour = sex)) + 
+  geom_point(size = 1.5, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(0,1500), breaks = seq(0,1500,150), labels = comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  labs(x = "", y = "Individuals\n") +
+  theme(legend.position = c(.15,.915),
+        legend.direction = "horizontal")
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly by sex individuals1.png", height = 4, width = 6, dpi = 800)
+
+# Prescriptions
+monthly_drugs_by_sex %>%
+  mutate(sex = ordered(sex, labels = c("Female", "Male"))) %>% 
+  ggplot(aes(x = month_year, y = prescriptions, colour = sex)) + 
+  geom_point(size = 1, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(0,2750), breaks = seq(0,2750,250), labels = comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  facet_rep_wrap(~sex, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  labs(x = "", y = "Prescriptions\n") +
+  theme(legend.position = "none",
+        panel.spacing = unit(-.5,"lines"))
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly by sex.png", height = 4, width = 6, dpi = 800)
+
+# Individuals
+monthly_drugs_by_sex %>%
+  mutate(sex = ordered(sex, labels = c("Female", "Male"))) %>% 
+  ggplot(aes(x = month_year, y = individuals, colour = sex)) + 
+  geom_point(size = 1, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(0,1500), breaks = seq(0,1500,150), labels = comma) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y", guide = guide_axis(angle = 45)) +
+  facet_rep_wrap(~sex, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  labs(x = "", y = "Individuals\n") +
+  theme(legend.position = "none",
+        panel.spacing = unit(-.5,"lines"))
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/monthly by sex individuals.png", height = 4, width = 6, dpi = 800)
+
+# Table
+ann_avg_monthly_sex <- monthly_drugs_by_sex %>% 
+  group_by(year(month_year), sex) %>% 
+  summarise(
+    monthly_ind = mean(individuals),
+    monthly_pres = mean(prescriptions)
+  ) %>% 
+  rename(year = 'year(month_year)') %>% 
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/annual_drugs_by_sex.csv")
+
+# Increase
+ann_avg_monthly_sex %>% 
+  group_by(sex) %>% 
+  summarise(
+    monthly_2015 = monthly_pres[year == "2015"],
+    monthly_2021 = monthly_pres[year == "2021"],
+    monthly_inc = (monthly_2021 - monthly_2015) / monthly_2015,
+    monthly_ind_2015 = monthly_ind[year == "2015"],
+    monthly_ind_2021 = monthly_ind[year == "2021"],
+    monthly_ind_inc = (monthly_ind_2021 - monthly_ind_2015) / monthly_ind_2015
+  )
+
+# Prescriptions
+ann_avg_monthly_sex %>%
+  mutate(sex = ordered(sex, labels = c("Female", "Male"))) %>% 
+  ggplot(aes(x = year, y = monthly_pres, colour = sex)) + 
+  geom_point(size = 1, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(0,2250), breaks = seq(0,2250,250), labels = comma) +
+  scale_x_continuous(breaks = seq(2015,2021,1), guide = guide_axis(angle = 45)) +
+  facet_rep_wrap(~sex, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  labs(x = "", y = "Average Monthly Prescriptions\n") +
+  theme(legend.position = "none",
+        panel.spacing = unit(-.5,"lines"))
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/annual monthly by sex.png", height = 4, width = 6, dpi = 800)
+
+# Individuals
+ann_avg_monthly_sex %>%
+  mutate(sex = ordered(sex, labels = c("Female", "Male"))) %>% 
+  ggplot(aes(x = year, y = monthly_ind, colour = sex)) + 
+  geom_point(size = 1, alpha = .7) +
+  scale_colour_manual(values = cbspal, name = "") +
+  scale_y_continuous(limits = c(0,1300), breaks = seq(0,1300,100), labels = comma) +
+  scale_x_continuous(breaks = seq(2015,2021,1), guide = guide_axis(angle = 45)) +
+  facet_rep_wrap(~sex, scales = "fixed", nrow = 1, repeat.tick.labels = F) +
+  labs(x = "", y = "Average Monthly Individuals\n") +
+  theme(legend.position = "none",
+        panel.spacing = unit(-.5,"lines"))
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/annual monthly by sex individuals.png", height = 4, width = 6, dpi = 800)
+  
+```
+
+# Age amplification
+```{r}
+age_accepted_month <-
+pis %>%
+  filter(month_year <= ymd("2021-06-01")) %>%
+  filter(rejected_referral == 2) %>%
+  group_by(month_year) %>%
+  summarise(mean_age = mean(age_at_referral)) %>%
+  write_csv("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/files/age_accepted_by_month.csv")
+
+# Plot
+age_accepted_month %>%
+  ggplot(aes(month_year, mean_age)) +
+  geom_point(alpha = 0.7, color = "firebrick") +
+  geom_smooth(se = F, size = 1.2, alpha = .9,span = 1, color = "firebrick") +
+  scale_x_date(breaks = date_breaks("year"),
+               labels = date_format("%Y")) +
+  scale_y_continuous(limits = c(9,14), breaks = seq(8,15,by=1)) +
+  labs(x = "", y = "Mean Age of\n Accepted Referrals\n",
+       title = "The average age of those treated by CAMHS has risen over time") +
+  theme_classic() +
+  theme(panel.grid.major.y = element_line(),
+        plot.title.position = "plot") 
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/accepted mean age.png", height = 5, width = 8, dpi = 800)
+```
+
+# SSI/RII
+
+```{r}
+library(broom)
+
+# Annual SII
+
+sii_model <- annual_totals %>%
+  group_by(area, year) %>% 
+  mutate(
+    cumulative_pro = cumsum(proportion_pop),
+    relative_rank = case_when(
+      decile == 1 ~ 0.5 * proportion_pop,
+      decile != 1 ~ lag(cumulative_pro) + 0.5 * proportion_pop),
+    sqr_proportion_pop = sqrt(proportion_pop),
+    relrank_sqr_proppop = relative_rank * sqr_proportion_pop,
+    value_sqr_proppop = sqr_proportion_pop * pop_rate_100) %>%
+  nest() %>% 
+  mutate(model = map(data, ~ lm(value_sqr_proppop ~ sqr_proportion_pop + relrank_sqr_proppop + 0, data = .)),
+         sii = -1 * as.numeric(map(map(model, "coefficients"), "relrank_sqr_proppop")),
+         cis = map(model, confint_tidy)) %>% 
+  ungroup() %>% 
+  unnest(cis) %>% 
+  filter(row_number() %% 2 == 0) %>% 
+  mutate(lowci_sii = -1 * conf.high,
+         upci_sii = -1 * conf.low) %>% 
+  select(-conf.low, -conf.high)
+
+annual_totals <- left_join(annual_totals, sii_model, by = c("year","area"))
+
+# Annual RII
+
+annual_totals <- annual_totals %>% 
+  mutate(rii = sii / overall_rate_100,
+         lowci_rii = lowci_sii / overall_rate_100,
+         upci_rii = upci_sii / overall_rate_100,
+         rii_int = rii * 0.5 * 100,
+         lowci_rii_int = lowci_rii * 0.5 * 100,
+         upci_rii_int = upci_rii * 0.5 * 100)
+
+
+# Mean SII
+sii_model <- mean_totals %>% 
+  group_by(area) %>% 
+  mutate(cumulative_pro = cumsum(proportion_total_mean_pop),
+         relative_rank = case_when(
+           decile == 1 ~ 0.5 * proportion_total_mean_pop,
+           decile != 1 ~ lag(cumulative_pro) + 0.5 * proportion_total_mean_pop),
+         sqr_proportion_pop = sqrt(proportion_total_mean_pop),
+         relrank_sqr_proppop = relative_rank * sqr_proportion_pop,
+         value_sqr_proppop = sqr_proportion_pop * mean_pop_rate_100) %>%
+  nest() %>% 
+  mutate(model = map(data, ~ lm(value_sqr_proppop ~ sqr_proportion_pop + relrank_sqr_proppop + 0, data = .)),
+         sii = -1 * as.numeric(map(map(model, "coefficients"), "relrank_sqr_proppop")),
+         cis = map(model, confint_tidy)) %>% 
+  ungroup() %>% 
+  unnest(cis) %>% 
+  filter(row_number() %% 2 == 0) %>% 
+  mutate(lowci_sii = -1 * conf.high,
+         upci_sii = -1 * conf.low) %>% 
+  select(-conf.low, -conf.high)
+
+mean_totals <- left_join(mean_totals, sii_model, by = "area")
+
+# Mean RII
+
+mean_totals <- mean_totals %>% 
+  mutate(rii = sii / mean_overall_100,
+         lowci_rii = lowci_sii / mean_overall_100,
+         upci_rii = upci_sii / mean_overall_100,
+         rii_int = rii * 0.5 * 100,
+         lowci_rii_int = lowci_rii * 0.5 * 100,
+         upci_rii_int = upci_rii * 0.5 * 100)
+```
+
+```{r}
+# SII Plot
+
+annual_totals %>% 
+  filter(year < 2021) %>% 
+  ggplot(aes(x = year, y = sii)) +
+  annotate("rect", ymin = mean_totals$lowci_sii, ymax = mean_totals$upci_sii, xmin = -Inf, xmax = Inf, alpha = .05, fill = "firebrick2") +
+  geom_hline(yintercept = mean_totals$sii, alpha = .5, linetype = "dashed") +
+  geom_pointrange(aes(ymin = lowci_sii, ymax = upci_sii), colour = "firebrick", size = .5, fatten = 2) +
+  scale_x_continuous(limits = c(2015,2020), breaks = seq(2015,2021,by=1)) +
+  scale_y_continuous(limits = c(0,40), breaks = seq(0,40,by=5)) +
+  labs(x = "", y = "Slope Index of Inequality\n\n") -> sii
+
+sii
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/prescriptions sii.png", height = 4, width = 6, dpi = 800)
+
+# RII Plot
+
+annual_totals %>% 
+  filter(year < 2021) %>% 
+  ggplot(aes(x = year, y = rii_int)) +
+  annotate("rect", ymin = mean_totals$lowci_rii_int, ymax = mean_totals$upci_rii_int, xmin = -Inf, xmax = Inf, alpha = .05, fill = "firebrick2") +
+  geom_hline(yintercept = mean_totals$rii_int, alpha = .5, linetype = "dashed") +
+  geom_pointrange(aes(ymin = lowci_rii_int, ymax = upci_rii_int), colour = "firebrick", size = .5, fatten = 2) +
+  scale_x_continuous(limits = c(2015,2020), breaks = seq(2015,2021,by=1)) +
+  scale_y_continuous(limits = c(0,70), breaks = seq(0,70,by=10), labels = function(x) paste0("+", x, "%")) +
+  labs(x = "", y = "Relative Index of Inequality\n") -> rii
+
+rii
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/prescriptions rii.png", height = 4, width = 6, dpi = 800)
+
+# Remove captions & margins
+rii <- rii +
+  theme(axis.title.x = element_blank(),
+        plot.caption = element_blank(),
+        plot.margin = unit(c(.1,.1,.1,.1), "cm"))
+
+sii <- sii +
+  theme(axis.title.x = element_blank(),
+        plot.caption = element_blank(),
+        plot.margin = unit(c(.1,.1,.1,.1), "cm"))
+
+plot_grid(sii, rii, nrow = 2, labels = c('A','B'))
+
+ggsave("H:/DaSH477/Methods/Will/PIS & CAMHS Paper/plots/pis/prescriptions sii and rii.png", height = 6, width = 6, dpi = 1000)
+```
