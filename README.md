@@ -17,7 +17,7 @@ In this repository you will find the following documents:
 
 ## Authors
 
-This is maintained by:
+This repository is maintained by:
 
 - Will Ball - [Website](http://wpball.com) | [Github](https://github.com/will-ball) | [Twitter](http://www.twitter.com/willball12)
 - Jess Butler [Website](https://www.abdn.ac.uk/people/jessicabutler) | [Github](https://github.com/JessButler) | [Twitter](https://twitter.com/JessButler284)
@@ -34,5 +34,3 @@ Additional authors who contributed to the research (listed alphabetically):
 - Magdalena Rzewuska - [Website](https://www.abdn.ac.uk/people/magdalena.rzewuska)
 - Elaine Thompson
 - Katie Wilde - [Website](https://www.abdn.ac.uk/people/k.wilde)
-
-## 
