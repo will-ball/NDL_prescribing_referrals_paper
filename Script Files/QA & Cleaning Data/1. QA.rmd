@@ -1,0 +1,208 @@
+---
+title: "QA"
+author: "Will Ball"
+date: "24/08/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+
+.libPaths("H:/DaSH477/Methods/R Libraries")
+```
+
+# Packages
+
+```{r packages, message=FALSE,warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(vroom)
+library(skimr)
+library(finalfit)
+library(readr)
+library(tidylog)
+library(data.table)
+
+# pis_original <- vroom("H:/DaSH477/Data/Cleaned Data/Will/original_pis.csv", delim = ",")
+```
+
+# Data
+
+Pipe ('|') is delim
+
+pis_original <- vroom("H:/DaSH477/Data/Cleaned Data/Will/original_pis.csv", delim = ",")
+
+```{r data, message=FALSE,warning=FALSE}
+# 1. Import original data. Rename and derive
+pis_original <- vroom("H:/DaSH477/Data/Raw Data/Stage3_20211108/DaSH477_PIS_Release_v3.txt", delim = "|") %>% 
+  clean_names() %>%
+#  slice(-(1)) %>%  # Remove row of dashes
+#  mutate_if(is.character, ~ifelse(. == "NULL", NA, .)) %>% 
+  rename(dash_uid = da_sh477_study_num,                            # rename for clarity
+         datazone_2012 = dz_2012,
+         datazone_2016 = dz_2016,
+         datazone_2020 = dz_2020v2,
+         bnf_item = bnf_item_code) %>%
+  mutate(bnf_chapter = str_sub(bnf_item, start = 1, end = 2),      # Derive BNF chapter/section/subsection/paragraph codes
+         bnf_section = str_sub(bnf_item, start = 1, end = 4),
+         bnf_subsec = str_sub(bnf_item, start = 1, end = 6),
+         bnf_para = str_sub(bnf_item, start = 1, end = 7),
+         month_of_birth = as_date(month_of_birth),                     # Change from datetime class to just date
+         chi_mob = as_date(chi_mob),
+         pis_date = as_date(pis_date),
+         paid_date = as_date(paid_date),
+         prescribed_date = as_date(prescribed_date),
+         dispensed_date = as_date(dispensed_date))
+
+##### Replace NULL values with NA
+
+
+# 2. Derive age at event & age group
+pis_original <- pis_original %>% 
+  mutate(age_at_event = (month_of_birth %--% pis_date %/% years(1)),
+         age_group = case_when(
+                      age_at_event %in% c(0:4)   ~ "0-4",
+                      age_at_event %in% c(5:9)   ~ "5-9",
+                      age_at_event %in% c(10:14) ~ "10-14",
+                      age_at_event %in% c(15:19) ~ "15-19",
+                      age_at_event %in% c(20:24) ~ "20-24"),
+         age_group = ordered(age_group, levels = c("0-4","5-9","10-14","15-19","20-24")))
+
+# 3. Save Original
+fwrite(pis_original, "H:/DaSH477/Data/Cleaned Data/Will/original_pis.csv", sep = ",")
+
+```
+
+# Missingness & Checks
+
+```{r NAs, message=FALSE,warning=FALSE}
+# 0. Skim
+# skim_pis <- skim(pis_original)
+
+# 1. Missing-ness
+# missing_plot(pis_original)
+missing_pis <- missing_glimpse(pis_original) %>% 
+  arrange(desc(missing_n))
+missing_pis
+
+# 2. Checks
+checks <- pis_original %>%
+  summarise(
+    rows = nrow(pis_original),
+    distinct = n_distinct(pis_original),
+    individuals = n_distinct(dash_uid),
+    date_min = min(prescribed_date, na.rm = TRUE),
+    date_max = max(prescribed_date, na.rm = TRUE),
+    age_min = min(age_at_event, na.rm = TRUE),
+    age_max = max(age_at_event, na.rm = TRUE)
+  )
+checks
+```
+
+# Age Checks
+
+Some records with negative ages. (Fixable)
+Some records with NA month_of_birth. (Fixable)
+Some where age_at_event >= 25. (?Remove)
+
+```{r ages, warning=F,message=F}
+# 3. Ages
+pis_original %>% 
+  count(age_at_event)                      # Negative ages & some people aged 25 at event
+
+minus_age <- pis_original %>%
+  filter(age_at_event < 0)                 # Dataset mob is after each pis_date. chi_mob seems more reasonable for this case
+
+# 4. NA ages and age groups
+na_age <- pis_original %>% 
+  filter(is.na(age_at_event))
+
+na_age %>% 
+  count(month_of_birth, dob_source)        # Source is CHI, but no month_of_birth recorded
+
+na_age_group <- pis_original %>% 
+  filter(is.na(age_group))
+
+na_age_group %>% 
+  count(age_at_event)
+
+# 5. Aged 25
+age_25 <- pis_original %>% 
+  filter(age_at_event == 25) %>% 
+  select(dash_uid, pis_date, month_of_birth, chi_mob, dob_source, age_at_event, age_group) %>%
+  mutate(days = (month_of_birth %--% pis_date %/% days(1)),
+         years = days/365.25,
+         mob_agree = case_when(
+           month_of_birth == chi_mob ~ 1,
+           TRUE                      ~ 0)
+         )
+
+age_25 %>% 
+  count(dob_source)                        # All from dataset, none from CHI
+
+age_25 %>% 
+  count(mob_agree)                         # All agree with CHI mob
+```
+
+# Items without a BNF code
+
+Lots of DUMMY records.
+Some named items without BNF item code. (Fixable)
+
+```{r bnf item, warning=F,message=F}
+rm(checks, missing_pis)
+
+# 1. Check records without BNF Item Code
+no_bnf_item <- pis_original %>%
+  filter(is.na(bnf_item))
+
+no_bnf_item %>%
+  count(approved_name, sort = TRUE)     # Nearly all 'DUMMY'. Can complete BNF chapter/section/subsec/para
+
+# x. Dummy only
+dummy <- pis_original %>% 
+  filter(approved_name == "DUMMY")      # According to ISD documentation, dummy items weren't recognised or payment rejected
+
+dummy %>%
+  count(prescribable_item_name, sort = T)
+```
+
+# Univariable plots
+
+Date - Span seems reasonable. Trend reducing, 2x drops around 2019 & 2021
+Age at event - Expected trend
+Sex - No NAs, expected proportions
+Age Group - NAs (See above)
+
+```{r explore, warning=F,message=F}
+qplot(x = year(pis_date), data = pis_original, geom = "histogram")
+
+qplot(x = age_at_event, data = pis_original, geom = "histogram", stat = "bin", binwidth = 1)
+
+qplot(x = age_group, data = pis_original)
+
+qplot(x = chi_sex, data = pis_original)
+
+qplot(x = bnf_chapter, data = pis_original)
+```
+
+# Top 20s
+
+```{r top 20s, warning=F,message=F}
+pis_original %>%                       # All records
+  count(approved_name, sort = T) %>%
+  top_n(20) %>% 
+  mutate(rank = row_number()) %>% 
+  select(rank, everything())
+
+
+pis_original %>% 
+  filter(bnf_chapter == "04") %>%       # CNS Chapter
+  count(approved_name, sort = T) %>%
+  top_n(20) %>% 
+  mutate(rank = row_number()) %>% 
+  select(rank, everything())
+```

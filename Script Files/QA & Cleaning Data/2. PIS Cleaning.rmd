@@ -1,0 +1,302 @@
+---
+title: "PIS Cleaning"
+author: "Will Ball"
+date: "25/08/2021"
+output: html_document
+---
+# negative ages handling modified by Helen Rowlands 27/04/2022 
+
+
+# To Do:
+
+## Age
+1. NA for month_of_birth. Use chi_mob instead
+
+2. Negative age_at_event. Use chi_mob instead of month_of_birth
+
+3. People aged 25. Keep records as they are likely to be rounding errors (from month of birth)
+
+## BNF Item Codes
+1. Some without BNF Item Code, but approved_name can be used to assign chapter, section, subsec & paragraph codes
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999)
+
+.libPaths("H:/DaSH477/Methods/R Libraries")
+```
+
+# Packages
+
+```{r packages, message=FALSE,warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(janitor) 
+library(vroom)
+library(skimr)
+library(finalfit)
+library(viridis)
+library(data.table)
+library(tidylog)
+```
+
+# Data
+
+```{r data, warning=FALSE,message=FALSE}
+pis_original <- vroom("H:/DaSH477/Data/Cleaned Data/Will/original_pis.csv", delim = ",") # fread drops leading 0s by default
+
+# For inclusion
+pis_original %>% 
+  summarise(
+    rows = n(),
+    individuals = n_distinct(dash_uid)
+  )
+```
+
+# Age
+
+## 1. NA month_of_birth
+
+```{r age 2, warning=FALSE,message=FALSE}
+pis_cleaned <- pis_original
+
+# 1. Get records where age_at_event or month_of_birth are NA
+na_age <- pis_cleaned %>% 
+  filter(is.na(month_of_birth)) %>%
+  select(dash_uid, month_of_birth, chi_mob, dob_source)
+
+missing_plot(na_age) # Complete chi_mob
+
+# 2. Explore source
+na_age %>% 
+  count(dob_source) # All chi_dob but showing NA.
+
+# 3. Replace NAs with chi_mob
+pis_cleaned$month_of_birth[is.na(pis_cleaned$month_of_birth)] <- pis_cleaned$chi_mob[is.na(pis_cleaned$month_of_birth)]
+
+# 4. Check it worked
+na_age_cleaned <- pis_cleaned %>%
+  filter(is.na(month_of_birth))  # No more records with NA month_of_birth
+
+# 5. Derive age at event and age groups again
+pis_cleaned <- pis_cleaned %>% 
+  mutate(age_at_event = (month_of_birth %--% pis_date %/% years(1)),
+         age_group = case_when(
+                      age_at_event %in% c(0:4)   ~ "0-4",
+                      age_at_event %in% c(5:9)   ~ "5-9",
+                      age_at_event %in% c(10:14) ~ "10-14",
+                      age_at_event %in% c(15:19) ~ "15-19",
+                      age_at_event %in% c(20:24) ~ "20-24"),
+         age_group = ordered(age_group, levels = c("0-4","5-9","10-14","15-19","20-24")))
+
+# 6. Check for ages at event
+na_age_cleaned <- pis_cleaned %>%
+  filter(is.na(age_at_event))
+```
+
+## 1. Negative age_at_event
+
+Erroneous birth dates identified.
+- Where chi_dob and month_of_birth (from Health Intelligence) are different, the realistic one has been used.
+- Where month_of_birth and chi_mob are the same, records have been removed: All source dob from CHI (without century info - could be 19xx rather than 20xx). Some individuals whose medications suggest realistically they may be 100+
+
+```{r age 1, warning=FALSE,message=FALSE}
+rm(na_age, na_age_cleaned)
+
+# 1. Identify records where month_of_birth is after pis_date
+minus_age <- pis_cleaned %>%
+  filter(month_of_birth >= pis_date) %>%
+  select(dash_uid, pis_date, pis_date_source, paid_date, prescribed_date, month_of_birth, chi_mob, dob_source) %>% 
+  mutate(mob_agree = case_when(
+           month_of_birth == chi_mob ~ 1,
+           TRUE                      ~ 0))
+
+# 2. Check agreement of birth dates
+minus_age %>%
+  count(mob_agree)          # Most agree, some don't
+
+n_distinct(minus_age$dash_uid) # number of individuals
+
+# 3. Where dobs don't agree
+minus_age_disagree <- minus_age %>% 
+  filter(mob_agree == 0)
+
+n_distinct(minus_age_disagree$dash_uid) 
+
+## modified by HR
+
+# 2. Check any other issues 
+#pis_cleaned %>%
+#  filter(dash_uid in  unique(minus_age_disagree$dash_uid))        # month_of_birth seems to be wrong. chi_mob makes more sense
+
+
+ids <- unique(minus_age_disagree$dash_uid)
+
+# 3. Replace erroneous month_of_birth with chi_mob for all records with id of negative aged individual
+pis_cleaned$month_of_birth[pis_cleaned$dash_uid %in% ids[ids$dash_uid]] <- pis_cleaned$chi_mob[pis_cleaned$dash_uid %in% ids[ids$dash_uid]]
+
+## end of modification
+
+# re-do age at event & age_group
+pis_cleaned <- pis_cleaned %>% 
+  mutate(age_at_event = (month_of_birth %--% pis_date %/% years(1)),
+         age_group = case_when(
+                      age_at_event %in% c(0:4)   ~ "0-4",
+                      age_at_event %in% c(5:9)   ~ "5-9",
+                      age_at_event %in% c(10:14) ~ "10-14",
+                      age_at_event %in% c(15:19) ~ "15-19",
+                      age_at_event %in% c(20:24) ~ "20-24"),
+         age_group = ordered(age_group, levels = c("0-4","5-9","10-14","15-19","20-24")))
+
+# 4. Check records where month_of_birth and chi_mob agree
+minus_age_agree <- minus_age %>% 
+  filter(mob_agree == 1)
+
+# 5. Visualise
+minus_age_agree %>%
+  mutate(dash_uid = factor(dash_uid)) %>%
+  ggplot(aes(x = month_of_birth, y = pis_date, colour = dash_uid)) +
+  scale_x_date(limits = c(ymd("2012-01-01"),max(minus_age$month_of_birth))) +
+  geom_point(size = 2) +
+  geom_abline(slope = 1, intercept = 0, size = 1.1, linetype = "dashed") +
+  theme_minimal()
+
+# 6. ?Wrong century
+minus_age_agree_ids <- unique(minus_age_agree$dash_uid)
+
+minus_age_agree_all <- pis_cleaned %>%
+  filter(dash_uid %in% minus_age_agree_ids) %>%
+  select(dash_uid, pis_date, pis_date_source, paid_date, prescribed_date, month_of_birth, chi_mob, dob_source, approved_name) %>%
+  mutate(
+    age_20 = (month_of_birth %--% pis_date %/% years(1)),
+    age_19 = (month_of_birth %--% pis_date %/% years(1)) + 100) %>%
+  group_by(dash_uid) %>%
+  arrange(pis_date, .by_group = T) %>%
+  mutate(record = row_number()) %>%
+  ungroup()
+
+# 7. Remove
+pis_cleaned <- pis_cleaned %>%
+  filter(!(dash_uid %in% minus_age_agree_ids))
+
+pis_cleaned %>% 
+  summarise(
+    rows = n(),
+    individuals = n_distinct(dash_uid)
+  )
+```
+
+## 3. Age 25
+
+```{r age 3, warning=FALSE,message=FALSE}
+rm(minus_age, minus_age_agree, minus_age_disagree, minus_age_agree_ids, minus_age_agree_all)
+
+# 1. Identify people aged 25 at event
+age_25 <- pis_cleaned %>% 
+  filter(age_at_event == 25) %>% 
+  select(dash_uid, pis_date, month_of_birth, chi_mob, dob_source, age_at_event, age_group) %>%
+  mutate(days = (month_of_birth %--% pis_date %/% days(1)),
+         years = days/365.25,                                           # Crude approach
+         years_lubridate = (month_of_birth %--% pis_date %/% years(1)), # Takes into account leap year days true to calendar
+         mob_agree = case_when(
+           month_of_birth == chi_mob ~ 1,
+           TRUE                      ~ 0)
+         )
+
+# 2. Confirm
+age_25 %>% 
+  count(mob_agree)    # All dates agree with chi record
+
+min(age_25$years)
+max(age_25$years)
+min(age_25$years_lubridate)
+max(age_25$years_lubridate)
+
+######### Decided to keep - DOB rounded to MOB for transfer to DaSH
+# 3. Remove records where age >= 25
+#pis_cleaned <- pis_cleaned %>% 
+#  filter(!age_at_event == 25)
+
+#min(pis_cleaned$age_at_event)
+#max(pis_cleaned$age_at_event)
+
+rm(age_25)
+```
+
+# BNF
+
+## 1. Missing BNF Item Codes
+
+1% of all records have no bnf_item codes. Nearly all of those are 'Dummy' records
+- Likely to remove
+- Small number of real drugs and some of these have multiple appearances in the BNF so difficult to replace NAs
+
+```{r BNF 1, warning=FALSE,message=FALSE}
+# pis_cleaned <- vroom("H:/DaSH477/Data/Cleaned Data/Will/cleaned_pis.csv", delim = ",")
+
+# 1. Located records without bnf_item code
+no_bnf_item <- pis_cleaned %>%
+  filter(is.na(bnf_item) | bnf_item == "NULL")
+
+no_bnf_item %>%
+  count(approved_name, sort = TRUE)
+
+# 2. Remove Dummy items
+pis_cleaned <- pis_cleaned %>% 
+  filter(!(approved_name == "DUMMY"))
+
+pis_cleaned %>% 
+  summarise(
+    n = n(),
+    individuals = n_distinct(dash_uid)
+  )
+
+# Repeat counts
+no_bnf_item <- pis_cleaned %>%
+  filter(is.na(bnf_item) | bnf_item == "NULL")
+
+no_bnf_item %>%
+  count(approved_name, sort = TRUE)
+
+# 3. List of drugs without bnf_item codes
+no_bnf_meds <- unique(no_bnf_item$approved_name)
+
+# 4. Get most common bnf chapters, sections, subsections, paras for each drug above
+meds1 <- pis_original %>%
+  filter(approved_name %in% no_bnf_meds) %>%
+  filter(!is.na(bnf_chapter)) %>% 
+  count(approved_name, bnf_chapter, bnf_section, bnf_subsec, bnf_para) %>% 
+  group_by(approved_name) %>%
+  arrange(desc(n), .by_group = T) %>% 
+  top_n(1)
+
+# 5. If bnf_item is NA, replace chapter/section/subsection/para with codes from meds1
+pis_cleaned <- pis_cleaned %>% 
+  left_join(meds1, by = "approved_name") %>% 
+              mutate(bnf_chapter = coalesce(bnf_chapter.x, bnf_chapter.y),
+                     bnf_section = coalesce(bnf_section.x, bnf_section.y),
+                     bnf_subsec = coalesce(bnf_subsec.x, bnf_subsec.y),
+                     bnf_para = coalesce(bnf_para.x, bnf_para.y)) %>%
+  select(!ends_with(c(".x",".y")))
+
+pis_cleaned %>% 
+  filter(approved_name %in% no_bnf_meds) %>% 
+  filter(is.na(bnf_item) | bnf_item == "NULL") %>% 
+  count(approved_name, bnf_chapter, bnf_section, bnf_subsec, bnf_para)
+
+# 6. Ichthammol in yellow soft paraffin by hand
+pis_cleaned$bnf_chapter[pis_cleaned$approved_name == "ICHTHAMMOL IN YELLOW SOFT PARAFFIN"] <- "13"
+pis_cleaned$bnf_section[pis_cleaned$approved_name == "ICHTHAMMOL IN YELLOW SOFT PARAFFIN"] <- "1305"
+pis_cleaned$bnf_subsec[pis_cleaned$approved_name == "ICHTHAMMOL IN YELLOW SOFT PARAFFIN"] <- "130501"
+pis_cleaned$bnf_para[pis_cleaned$approved_name == "ICHTHAMMOL IN YELLOW SOFT PARAFFIN"] <- "1305010"
+```
+
+# Save
+
+```{r save, warning=FALSE,message=FALSE}
+rm(meds1, no_bnf_item, no_bnf_meds, pis_original)
+
+fwrite(pis_cleaned, "H:/DaSH477/Data/Cleaned Data/Will/cleaned_pis.csv", sep = ",")
+```
