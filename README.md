@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/500449838.svg)](https://zenodo.org/badge/latestdoi/500449838)
+
 # Inequalities in childrens' mental health care: analysis of routinely collected data on prescribing and referrals to secondary care
 
 ## Introduction 
