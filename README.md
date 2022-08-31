@@ -4,7 +4,7 @@
 
 ## Introduction 
 <img align="right" src="preprint.png" alt="A screenshot of our preprint" width="350">
-This repository contains supplementary materials related to the preprint which can be found here: https://www.medrxiv.org/content/10.1101/2022.06.14.22276082v1. Here we provide additional information about this work as well as summary data and the code used to analyse and produce the tables and plots in this published work.
+This repository contains supplementary materials related to the preprint which can be found here: https://www.medrxiv.org/content/10.1101/2022.06.14.22276082v2. Here we provide additional information about this work as well as summary data and the code used to analyse and produce the tables and plots in this published work.
 
 The paper present results of an analysis of mental health prescribing and referrals to specialist Child and Adolescent Mental Health Services (CAMHS) for children in the NHS Grampian health board region (North East Scotland). This research was undertaken as part of the [Networked Data Lab project](https://www.health.org.uk/funding-and-partnerships/our-partnerships/the-networked-data-lab) which is funded by the [Health Foundation](https://www.health.org.uk/)
 
