@@ -30,7 +30,7 @@ Additional authors who contributed to the research (listed alphabetically):
 
 - Corri Black - [Website](https://www.abdn.ac.uk/people/corri.black)
 - Sharon Gordon - [Website](https://www.abdn.ac.uk/people/sharon.gordon)
-- Barbala Ostrovska 
+- Bārbala Ostrovska 
 - Shantini Paranjothy - [Website](https://www.abdn.ac.uk/people/shantini.paranjothy)
 - Adelene Rasalam 
 - David Ritchie
