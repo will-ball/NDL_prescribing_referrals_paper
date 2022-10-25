@@ -14,8 +14,10 @@ In this repository you will find the following documents:
 
 - Script files used to produce summary tables and plots of prescribing and referrals data
 - Aggregated summary data files released from the [Grampian Data Safe Haven (DaSH)](https://www.abdn.ac.uk/iahs/facilities/grampian-data-safe-haven.php)
-- [A table](https://github.com/AbdnCHDS/NDL_prescribing_referrals_paper/blob/main/Supporting%20material%20Table%20S1.%20GRIPP2-SF%20for%20CYPMH.pdf) which reports the detailed public involvement activities which informed and helped shape this project, following the GRIPP2-SF guidelines
-- [A credit taxonomy table](https://github.com/AbdnCHDS/NDL_prescribing_referrals_paper/blob/main/credit%20taxonomy.pdf) outlining the different contributions made to this project by the authors
+- [A table](https://github.com/AbdnCHDS/NDL_prescribing_referrals_paper/blob/main/Table%20S1.%20GRIPP2-SF.pdf) which reports the detailed public involvement activities which informed and helped shape this project, following the GRIPP2-SF guidelines
+- [A credit taxonomy table](https://github.com/AbdnCHDS/NDL_prescribing_referrals_paper/blob/main/Table%20S2.%20credit%20taxonomy.pdf) outlining the different contributions made to this project by the authors
+- [A table](https://github.com/AbdnCHDS/NDL_prescribing_referrals_paper/blob/main/Table%20S3.%20Medicines%20List.pdf) outlining the mental health related medicines used in this analysis.
+-  [Supplementary Figures](https://github.com/AbdnCHDS/NDL_prescribing_referrals_paper/tree/main/Supplementary%20Figures) which are replications of the main prescribing plots but using a dataset which excludes melatonin prescriptions.
 
 ## Authors
 
